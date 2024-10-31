@@ -75,10 +75,13 @@ def strip_lowerdiag(L):
 def strip_symmetric(sym):
     return strip_lowerdiag(sym)
 
+# 由每个高斯的四元数[N,4]得到每个高斯的旋转矩阵[N,3,3]
 def build_rotation(r):
-    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
+    # r的形状类似于torch.tensor([[-1, -1, -1, -1], [5, 6, 7, 8]])，即(N，4)，每一行表示一个四元数
+    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3]) # 此时norm的shape为[N]
 
-    q = r / norm[:, None]
+    # 归一化使得旋转时只改变角度不改变幅值
+    q = r / norm[:, None] # 得到单位四元数 # norm[:, None]的shape为[N,1]，相当于升维转置，为了将每一行的四元数除以其模长
 
     R = torch.zeros((q.size(0), 3, 3), device='cuda')
 
@@ -87,6 +90,7 @@ def build_rotation(r):
     y = q[:, 2]
     z = q[:, 3]
 
+    # 由归一化四元数求对应的旋转矩阵
     R[:, 0, 0] = 1 - 2 * (y*y + z*z)
     R[:, 0, 1] = 2 * (x*y - r*z)
     R[:, 0, 2] = 2 * (x*z + r*y)
@@ -106,7 +110,7 @@ def build_scaling_rotation(s, r):
     L[:,1,1] = s[:,1]
     L[:,2,2] = s[:,2]
 
-    L = R @ L
+    L = R @ L # @表示矩阵乘法，*表示逐元素乘法
     return L
 
 def safe_state(silent):

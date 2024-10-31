@@ -61,14 +61,14 @@ def eval_sh(deg, sh, dirs):
     Works with torch/np/jnp.
     ... Can be 0 or more batch dimensions.
     Args:
-        deg: int SH deg. Currently, 0-3 supported
-        sh: jnp.ndarray SH coeffs [..., C, (deg + 1) ** 2]
-        dirs: jnp.ndarray unit directions [..., 3]
+        deg: int SH deg. Currently, 0-3 supported 球谐函数的阶数
+        sh: jnp.ndarray SH coeffs [..., C, (deg + 1) ** 2] 球谐函数的系数
+        dirs: jnp.ndarray unit directions [..., 3] 方向值
     Returns:
         [..., C]
     """
     assert deg <= 4 and deg >= 0
-    coeff = (deg + 1) ** 2
+    coeff = (deg + 1) ** 2 # 从0阶到deg阶的系数总个数
     assert sh.shape[-1] >= coeff
 
     result = C0 * sh[..., 0]

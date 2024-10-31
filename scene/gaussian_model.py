@@ -31,39 +31,43 @@ class GaussianModel:
 
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
-            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
-            actual_covariance = L @ L.transpose(1, 2)
+            L = build_scaling_rotation(scaling_modifier * scaling, rotation) # 得到RS
+            actual_covariance = L @ L.transpose(1, 2)  # 得到每高斯的RS(S^T)(R^T)，即真实的协方差矩阵∑
+            # 由于协方差矩阵为对称矩阵，为了节省内存，对于每个高斯，只保留上半部分的6个数字，并且铺平，则symm.shape = [N,6]
             symm = strip_symmetric(actual_covariance)
             return symm
         
+         # 缩放因子的激活函数为指数函数
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
 
         self.covariance_activation = build_covariance_from_scaling_rotation
 
+        # 不透明度函数的激活函数为sigmoid，为了保证不透明度在0~1之间
         self.opacity_activation = torch.sigmoid
         self.inverse_opacity_activation = inverse_sigmoid
 
+        # 旋转函数的激活函数为归一化函数，torch.nn.functional.normalize默认状态下为欧几里得范数，即平方和开根
         self.rotation_activation = torch.nn.functional.normalize
 
 
     def __init__(self, sh_degree, optimizer_type="default"):
-        self.active_sh_degree = 0
-        self.optimizer_type = optimizer_type
-        self.max_sh_degree = sh_degree  
-        self._xyz = torch.empty(0)
-        self._features_dc = torch.empty(0)
-        self._features_rest = torch.empty(0)
-        self._scaling = torch.empty(0)
-        self._rotation = torch.empty(0)
-        self._opacity = torch.empty(0)
-        self.max_radii2D = torch.empty(0)
-        self.xyz_gradient_accum = torch.empty(0)
-        self.denom = torch.empty(0)
-        self.optimizer = None
-        self.percent_dense = 0
-        self.spatial_lr_scale = 0
-        self.setup_functions()
+        self.active_sh_degree = 0 # 球谐函数的初始阶数
+        self.optimizer_type = optimizer_type 
+        self.max_sh_degree = sh_degree  # 球谐函数的最高阶数
+        self._xyz = torch.empty(0) # 椭球位置
+        self._features_dc = torch.empty(0) # 球谐函数的直流分量
+        self._features_rest = torch.empty(0) # 球谐函数的高阶分量
+        self._scaling = torch.empty(0) # 缩放因子
+        self._rotation = torch.empty(0) # 旋转因子
+        self._opacity = torch.empty(0) # 不透明度
+        self.max_radii2D = torch.empty(0) # 投影到二维平面后的最大半径
+        self.xyz_gradient_accum = torch.empty(0) # 点云位置的梯度累积值
+        self.denom = torch.empty(0) # 统计的分母数量，用xyz_gradient_accum除以denom得到每个高斯分布的平均梯度
+        self.optimizer = None # 优化器
+        self.percent_dense = 0 # 百分比密度，做密度控制时用到
+        self.spatial_lr_scale = 0 # 学习率因子
+        self.setup_functions() # 协方差、激活函数
 
     def capture(self):
         return (
@@ -99,6 +103,7 @@ class GaussianModel:
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
 
+    # 值得注意的是，提取变量返回的是经过激活函数后的原变量，所以初始化时也设置了激活函数的反函数用以得到真实的变量值
     @property
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
@@ -142,6 +147,7 @@ class GaussianModel:
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
+    # 迭代球谐函数的阶数
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
@@ -149,9 +155,9 @@ class GaussianModel:
     def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
-        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-        features[:, :3, 0 ] = fused_color
+        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda()) # 只存了0阶的球谐函数
+        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda() # 存储每个高斯的3个通道的球谐函数系数
+        features[:, :3, 0 ] = fused_color # 第0阶为直流分量
         features[:, 3:, 1:] = 0.0
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
