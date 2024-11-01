@@ -166,10 +166,11 @@ class GaussianModel:
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         # 将dist2升维转置，并在第二维上复制三次，scales.shape = [points.shape(0), 3]
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
-        # 将每个高斯的初始旋转因子设置为[1,0,0,0]，
+        # 将每个高斯的初始旋转因子设置为[1,0,0,0]
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
-
+        
+        # 将每个高斯的不透明度设置为0.1
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
@@ -245,6 +246,7 @@ class GaussianModel:
             l.append('rot_{}'.format(i))
         return l
 
+    # 存储点云文件
     def save_ply(self, path):
         mkdir_p(os.path.dirname(path))
 
@@ -264,11 +266,13 @@ class GaussianModel:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
+    # 重置不透明度到0.01以内
     def reset_opacity(self):
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
+    # 加载点云文件
     def load_ply(self, path, use_train_test_exp = False):
         plydata = PlyData.read(path)
         if use_train_test_exp:
