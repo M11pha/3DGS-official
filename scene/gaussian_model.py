@@ -162,8 +162,11 @@ class GaussianModel:
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
+        # 按分块计算每个高斯的平均最短距离，并限定最小距离为0.0000001，dist2.shape = [points.shape(0)]
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        # 将dist2升维转置，并在第二维上复制三次，scales.shape = [points.shape(0), 3]
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        # 将每个高斯的初始旋转因子设置为[1,0,0,0]，
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
