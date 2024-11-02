@@ -18,6 +18,7 @@ distCUDA2(const torch::Tensor& points)
   const int P = points.size(0);
 
   auto float_opts = points.options().dtype(torch::kFloat32);
+  // means存储每个高斯的最近邻结果
   torch::Tensor means = torch::full({P}, 0.0, float_opts);
   
   SimpleKNN::knn(P, (float3*)points.contiguous().data<float>(), means.contiguous().data<float>());

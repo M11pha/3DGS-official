@@ -162,7 +162,7 @@ class GaussianModel:
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
-        # 按分块计算每个高斯的平均最短距离，并限定最小距离为0.0000001，dist2.shape = [points.shape(0)]
+        # 使用到了simple-knn，按分块计算每个高斯的平均最短距离，并限定最小距离为0.0000001，dist2.shape = [points.shape(0)]
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         # 将dist2升维转置，并在第二维上复制三次，scales.shape = [points.shape(0), 3]
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
@@ -376,6 +376,7 @@ class GaussianModel:
         self.max_radii2D = self.max_radii2D[valid_points_mask]
         self.tmp_radii = self.tmp_radii[valid_points_mask]
 
+    # 该函数实现了将额外的张量拼接到已有优化器参数上的功能，并且确保优化器的状态和动量信息也能正确地匹配扩展后的新张量
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -398,6 +399,7 @@ class GaussianModel:
 
         return optimizable_tensors
 
+    # 按照坐标、球谐函数、不透明度、旋转、缩放、投影半径？创建新高斯
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
@@ -420,6 +422,9 @@ class GaussianModel:
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
+        '''
+        如果位置梯度大于设定阈值，且过度重建，则分裂
+        '''
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -446,6 +451,9 @@ class GaussianModel:
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
+        '''
+        如果位置梯度大于设定阈值，但没有过度重建，则克隆
+        '''
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
@@ -470,6 +478,7 @@ class GaussianModel:
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
 
+        # 如果椭球不透明度<最小不透明度，或椭球形状巨大，则剔除该椭球------------------------------------------
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
@@ -478,7 +487,7 @@ class GaussianModel:
         self.prune_points(prune_mask)
         tmp_radii = self.tmp_radii
         self.tmp_radii = None
-
+        # ------------------------------------------------------------------------------------------------
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
