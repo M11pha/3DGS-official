@@ -19,9 +19,8 @@ namespace cg = cooperative_groups;
 // coefficients of each Gaussian to a simple RGB color.
 __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
 {
-	'''
-	从SH系数计算颜色
-	'''
+	//从SH系数计算颜色
+	
 	// The implementation is loosely based on code for 
 	// "Differentiable Point-Based Radiance Fields for 
 	// Efficient View Synthesis" by Zhang et al. (2022)
@@ -83,6 +82,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	// 由世界坐标系坐标求相机坐标系？坐标，t.shape = [3]
 	float3 t = transformPoint4x3(mean, viewmatrix);
 
+	// 这段将t.x与t.y限制在1.3倍的原始相机角度之内
 	const float limx = 1.3f * tan_fovx;
 	const float limy = 1.3f * tan_fovy;
 	const float txtz = t.x / t.z;
@@ -90,11 +90,13 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	t.x = min(limx, max(-limx, txtz)) * t.z;
 	t.y = min(limy, max(-limy, tytz)) * t.z;
 
+	// 雅可比矩阵，透视投影的线性近似
 	glm::mat3 J = glm::mat3(
 		focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
 		0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
 		0, 0, 0);
 
+	// 提取旋转矩阵
 	glm::mat3 W = glm::mat3(
 		viewmatrix[0], viewmatrix[4], viewmatrix[8],
 		viewmatrix[1], viewmatrix[5], viewmatrix[9],
@@ -102,13 +104,16 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	glm::mat3 T = W * J;
 
+	// 由上三角存储的协方差矩阵恢复出原始三维协方差矩阵
 	glm::mat3 Vrk = glm::mat3(
 		cov3D[0], cov3D[1], cov3D[2],
 		cov3D[1], cov3D[3], cov3D[4],
 		cov3D[2], cov3D[4], cov3D[5]);
 
+	// 由三维协方差矩阵计算投影之后的二维协方差矩阵
 	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
 
+	// 以上三角方式返回二维协方差矩阵
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
@@ -117,6 +122,8 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 // of quaternion normalization.
 __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* cov3D)
 {
+	// 从缩放和旋转四元数计算三维协方差矩阵
+
 	// Create scaling matrix
 	glm::mat3 S = glm::mat3(1.0f);
 	S[0][0] = mod * scale.x;
@@ -128,7 +135,7 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 	float r = q.x;
 	float x = q.y;
 	float y = q.z;
-	float z = q.w;
+	float z = q.w; 
 
 	// Compute rotation matrix from quaternion
 	glm::mat3 R = glm::mat3(
@@ -182,7 +189,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
-		return;
+		return; // 如果idx大于点云总数，则当前线程不需要计算
 
 	// Initialize radius and touched tiles to 0. If this isn't changed,
 	// this Gaussian will not be processed further.
@@ -192,8 +199,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// Perform near culling, quit if outside.
 	float3 p_view;
 	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
-		return;
+		return; // 如果当前点不在视锥内，返回
 
+	// 由原始坐标转为NDC坐标，并进行归一化
 	// Transform point by projecting
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
@@ -238,10 +246,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// 2D covariance matrix). Use extent to compute a bounding rectangle
 	// of screen-space tiles that this Gaussian overlaps with. Quit if
 	// rectangle covers 0 tiles. 
+	// 计算椭圆长短轴，并近似为圆
 	float mid = 0.5f * (cov.x + cov.z);
 	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
 	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
 	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
+	// 从NDC坐标系转为像素坐标系，WH为图像宽高
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius, rect_min, rect_max, grid);
@@ -293,10 +303,15 @@ renderCUDA(
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
+	// 计算像素坐标系下，宽度方向有多少个BLOCK，向上取整
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	// 计算每个BLOCK的左上方坐标
 	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	// 计算每个BLOCK的右下方坐标
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+	// 得到当前像素点在整个光栅化平面里的坐标
 	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	// 计算在把像素一字排开的情况下，当前像素点的ID
 	uint32_t pix_id = W * pix.y + pix.x;
 	float2 pixf = { (float)pix.x, (float)pix.y };
 
