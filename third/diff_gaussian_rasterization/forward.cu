@@ -19,6 +19,9 @@ namespace cg = cooperative_groups;
 // coefficients of each Gaussian to a simple RGB color.
 __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
 {
+	'''
+	从SH系数计算颜色
+	'''
 	// The implementation is loosely based on code for 
 	// "Differentiable Point-Based Radiance Fields for 
 	// Efficient View Synthesis" by Zhang et al. (2022)
@@ -77,6 +80,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
 	// Additionally considers aspect / scaling of viewport.
 	// Transposes used to account for row-/column-major conventions.
+	// 由世界坐标系坐标求相机坐标系？坐标，t.shape = [3]
 	float3 t = transformPoint4x3(mean, viewmatrix);
 
 	const float limx = 1.3f * tan_fovx;
