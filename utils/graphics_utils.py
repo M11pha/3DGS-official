@@ -49,9 +49,13 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
     return np.float32(Rt)
 
 def getProjectionMatrix(znear, zfar, fovX, fovY):
+    '''
+    传入参数：相机的成像最近/最远平面到相机光心的距离、水平方向与垂直方向的视野范围
+    '''
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))
 
+    # 求成像最近平面的上下左右
     top = tanHalfFovY * znear
     bottom = -top
     right = tanHalfFovX * znear
