@@ -222,6 +222,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Compute 2D screen-space covariance matrix
+	// 以上三角方式返回三个系数
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
 
 	constexpr float h_var = 0.3f;
@@ -246,12 +247,13 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// 2D covariance matrix). Use extent to compute a bounding rectangle
 	// of screen-space tiles that this Gaussian overlaps with. Quit if
 	// rectangle covers 0 tiles. 
-	// 计算椭圆长短轴，并近似为圆
+	// 计算椭圆长短轴，并近似为圆--------------------------------
+	// 椭圆半长轴和半短轴长度是对应二维协方差矩阵的特征值的平方根
 	float mid = 0.5f * (cov.x + cov.z);
-	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
-	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
-	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
-	// 从NDC坐标系转为像素坐标系，WH为图像宽高
+	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det)); // 特征值1，一元二次方程求根公式
+	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det)); // 特征值2
+	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2))); // 以长轴作为近似圆的半径
+	// 从NDC坐标系转为像素坐标系，WH为图像宽高---------------------------------------------
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius, rect_min, rect_max, grid);
