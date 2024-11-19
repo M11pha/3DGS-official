@@ -255,11 +255,13 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2))); // 以长轴作为近似圆的半径
 	// 从NDC坐标系转为像素坐标系，WH为图像宽高---------------------------------------------
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
-	uint2 rect_min, rect_max;
-	getRect(point_image, my_radius, rect_min, rect_max, grid);
+	// 计算该近似圆覆盖了哪些tile---------------------------------------------------------
+	uint2 rect_min, rect_max; // 记录所覆盖的左上角和右下角tile的坐标
+	getRect(point_image, my_radius, rect_min, rect_max, grid); 
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
-
+	
+	// 计算颜色---------------------------------------------------------------------------
 	// If colors have been precomputed, use them, otherwise convert
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
@@ -279,8 +281,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 
 	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity * h_convolution_scaling };
-
-
+	// 计算所覆盖的tile总数
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
@@ -307,9 +308,9 @@ renderCUDA(
 	auto block = cg::this_thread_block();
 	// 计算像素坐标系下，宽度方向有多少个BLOCK，向上取整
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-	// 计算每个BLOCK的左上方坐标
+	// 计算每个BLOCK的左上方的坐标
 	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
-	// 计算每个BLOCK的右下方坐标
+	// 计算每个BLOCK的右下方的坐标
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
 	// 得到当前像素点在整个光栅化平面里的坐标
 	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
@@ -318,25 +319,32 @@ renderCUDA(
 	float2 pixf = { (float)pix.x, (float)pix.y };
 
 	// Check if this thread is associated with a valid pixel or outside.
+	// 由于向图片末端补全了tile，计算当前所渲染的像素是否在图像之内
 	bool inside = pix.x < W&& pix.y < H;
 	// Done threads can help with fetching, but don't rasterize
+	// done有两种情况，透过率t小于一定值、不在图像范围之内，为每个pixel设置了一个done属性
 	bool done = !inside;
 
-	// Load start/end range of IDs to process in bit sorted list.
+	// Load start/end range of IDs to process in bit sorted list.--------------------------
+	// 计算需要处理的线程的起点和终点
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	// 计算需要处理的轮次
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x;
 
 	// Allocate storage for batches of collectively fetched data.
+	// shared代表shared memory，被当前block中的所有thread共享
+	// 如果thread是去读取global memoery，速度很慢
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 
-	// Initialize helper variables
-	float T = 1.0f;
-	uint32_t contributor = 0;
+	// Initialize helper variables----------------------------------------------------------
+	// transmittance 透过率 每经过一个高斯，t会下降，下降到一定值，视为已完全渲染
+	float T = 1.0f; 
+	uint32_t contributor = 0; // 总共经过了多少个高斯
 	uint32_t last_contributor = 0;
-	float C[CHANNELS] = { 0 };
+	float C[CHANNELS] = { 0 }; // 记录渲染出来的颜色
 
 	float expected_invdepth = 0.0f;
 
@@ -344,19 +352,23 @@ renderCUDA(
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// End if entire block votes that it is done rasterizing
+		// 检查一个tile中是否所有pixel都已“done”
 		int num_done = __syncthreads_count(done);
 		if (num_done == BLOCK_SIZE)
 			break;
 
-		// Collectively fetch per-Gaussian data from global to shared
+		// Collectively fetch per-Gaussian data from global to shared------------
+		// progress 表示当前线程需要处理的任务偏移量,从range.x处，即起点处开始偏移
 		int progress = i * BLOCK_SIZE + block.thread_rank();
 		if (range.x + progress < range.y)
 		{
-			int coll_id = point_list[range.x + progress];
-			collected_id[block.thread_rank()] = coll_id;
-			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			int coll_id = point_list[range.x + progress]; // 用于存储当前线程负责的某个高斯点的索引
+			collected_id[block.thread_rank()] = coll_id;  // 将当前线程处理的高斯点 ID 存入共享内存 collected_id 中
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id]; // 从全局内存读取点位置信息并写入共享内存
+			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id]; // 从全局内存读取光锥透明度？数据并写入共享内存
 		}
+		// 线程同步,确保当前线程块中的所有线程都完成了对共享内存的写入操作
+		// 保证在后续步骤中，所有线程都可以安全地访问共享内存中的数据，而不会产生竞争条件
 		block.sync();
 
 		// Iterate over current batch
@@ -368,8 +380,11 @@ renderCUDA(
 			// Resample using conic matrix (cf. "Surface 
 			// Splatting" by Zwicker et al., 2001)
 			float2 xy = collected_xy[j];
-			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y }; // 当前像素与对应高斯中心的距离
 			float4 con_o = collected_conic_opacity[j];
+			//f(x,y) = e^(-1/2([x y] [con_o.x con_o.y] [x y]^T))
+			//                       [con_o.y con_o.z]
+			// power计算出指数上方的部分
 			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if (power > 0.0f)
 				continue;
@@ -378,7 +393,7 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, con_o.w * exp(power));
+			float alpha = min(0.99f, con_o.w * exp(power)); // con_o.w为初始不透明度
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
